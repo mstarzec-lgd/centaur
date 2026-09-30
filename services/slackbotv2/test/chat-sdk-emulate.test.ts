@@ -751,9 +751,64 @@ describe('slackbotv2', () => {
     expect(JSON.stringify(codexApi.executes[1]!.body.input_lines)).toContain(
       'please continue and check the failed plan'
     )
-    await expect(bot.chat.thread(threadKey(parent.ts)).state).resolves.toMatchObject({
-      ambientTriggerAcceptedCount: 1
+  })
+
+  it('atomically caps concurrent ambient replies in one thread', async () => {
+    let decisionCount = 0
+    let releaseDecisions: (() => void) | undefined
+    let resolveBothStarted: (() => void) | undefined
+    const decisionsHeld = new Promise<void>(resolve => { releaseDecisions = resolve })
+    const bothStarted = new Promise<void>(resolve => { resolveBothStarted = resolve })
+    bot = createTestBot({
+      ambientTriggerChannelIds: [CHANNEL_ID],
+      ambientTriggerMaxResponsesPerThread: 1,
+      ambientTriggerStrategy: async () => {
+        decisionCount += 1
+        if (decisionCount === 2) resolveBothStarted?.()
+        await decisionsHeld
+        return { probability: 0.99, respond: true }
+      }
     })
+    const parent = await postUserMessage('Inspect concurrent deploy updates.')
+    await bot.chat.getState().subscribe(threadKey(parent.ts))
+    const followUps = await Promise.all([
+      postUserMessage('Check the first update.', parent.ts),
+      postUserMessage('Check the second update.', parent.ts)
+    ])
+
+    const requests = followUps.map((followUp, index) => {
+      const waits: Promise<unknown>[] = []
+      const response = bot.app.request(
+        '/api/webhooks/slack',
+        signedSlackEvent({
+          event_id: `Ev-ambient-concurrent-${index}`,
+          event: {
+            type: 'message',
+            user: USER_ID,
+            channel: CHANNEL_ID,
+            team: TEAM_ID,
+            ts: followUp.ts,
+            thread_ts: parent.ts,
+            text: index === 0 ? 'Check the first update.' : 'Check the second update.'
+          }
+        }),
+        {},
+        waitUntilContext(waits)
+      )
+      return { response, waits }
+    })
+
+    await bothStarted
+    releaseDecisions?.()
+    const responses = await Promise.all(requests.map(async request => {
+      const response = await request.response
+      await Promise.all(request.waits)
+      return response
+    }))
+
+    expect(responses.map(response => response.status)).toEqual([200, 200])
+    expect(decisionCount).toBe(2)
+    expect(codexApi.executes).toHaveLength(1)
   })
 
   it('keeps an ambient reply silent when the trigger strategy fails', async () => {

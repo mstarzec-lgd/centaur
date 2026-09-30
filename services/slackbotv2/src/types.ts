@@ -261,8 +261,6 @@ export type SlackbotV2 = {
 
 export type SlackbotV2ThreadState = {
   activeExecution?: boolean
-  /** Number of non-mention messages accepted by the ambient trigger strategy. */
-  ambientTriggerAcceptedCount?: number
   executedMessageIds?: string[]
   forwardedMessageIds?: string[]
   /** Last thread-level harness selected by Slack flags. Null clears persisted state. */

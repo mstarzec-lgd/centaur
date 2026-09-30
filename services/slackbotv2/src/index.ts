@@ -508,6 +508,7 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
       thread,
       message,
       options,
+      state,
       ambientTriggerChannelIds
     ))) return
     await handleSlackMessageHandoff(thread, message, {
@@ -530,6 +531,7 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
         thread,
         message,
         options,
+        state,
         ambientTriggerChannelIds
       ))) {
         traceLog(
@@ -3449,10 +3451,32 @@ function isAmbientTriggerChannel(
   return Boolean(channelId && channelIds.has(channelId))
 }
 
+function ambientTriggerClaimKey(threadId: string, slot: number): string {
+  return `slackbotv2:ambient-trigger:claim:${threadId}:${slot}`
+}
+
+async function claimAmbientTriggerSlot(
+  state: StateAdapter,
+  threadId: string,
+  messageId: string,
+  maxResponses: number
+): Promise<number | null> {
+  // StateAdapter guarantees setIfNotExists is atomic. Fixed per-thread slot
+  // keys enforce the cap across concurrent handlers and multiple processes.
+  for (let slot = 1; slot <= maxResponses; slot += 1) {
+    if (await state.setIfNotExists(
+      ambientTriggerClaimKey(threadId, slot),
+      messageId
+    )) return slot
+  }
+  return null
+}
+
 async function shouldHandleAmbientMessage(
   thread: Thread<SlackbotV2ThreadState>,
   message: ChatMessage,
   options: SlackbotV2Options,
+  state: StateAdapter,
   channelIds: ReadonlySet<string>
 ): Promise<boolean> {
   if (!isAmbientTriggerChannel(message, channelIds)) return false
@@ -3461,11 +3485,10 @@ async function shouldHandleAmbientMessage(
   if (maxResponses <= 0 || !strategy) return false
 
   const trace = createHandoffTrace(thread, message, 'execute')
-  const currentCount = (await thread.state)?.ambientTriggerAcceptedCount ?? 0
-  if (currentCount >= maxResponses) {
+  if (await state.get(ambientTriggerClaimKey(thread.id, maxResponses)) !== null) {
     slackbotMetrics.ambientTriggerDecisions.inc({ outcome: 'cap_reached' })
     traceLog(options, 'slackbotv2_ambient_trigger_cap_reached', trace, {
-      accepted_count: currentCount,
+      accepted_count: maxResponses,
       max_responses_per_thread: maxResponses
     })
     return false
@@ -3499,20 +3522,23 @@ async function shouldHandleAmbientMessage(
       return false
     }
 
-    const latest = (await thread.state) ?? {}
-    const acceptedCount = latest.ambientTriggerAcceptedCount ?? 0
-    if (acceptedCount >= maxResponses) {
+    const acceptedCount = await claimAmbientTriggerSlot(
+      state,
+      thread.id,
+      message.id,
+      maxResponses
+    )
+    if (acceptedCount === null) {
       outcome = 'cap_reached'
       traceLog(options, 'slackbotv2_ambient_trigger_cap_reached', trace, {
-        accepted_count: acceptedCount,
+        accepted_count: maxResponses,
         max_responses_per_thread: maxResponses
       })
       return false
     }
-    await thread.setState({ ambientTriggerAcceptedCount: acceptedCount + 1 })
     outcome = 'execute'
     traceLog(options, 'slackbotv2_ambient_trigger_accepted', trace, {
-      accepted_count: acceptedCount + 1,
+      accepted_count: acceptedCount,
       max_responses_per_thread: maxResponses,
       model: decision.model,
       probability: decision.probability
