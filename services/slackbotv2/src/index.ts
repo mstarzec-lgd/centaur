@@ -3456,9 +3456,14 @@ function isAmbientTriggerChannel(
   allowChannelIds: ReadonlySet<string>,
   denyChannelIds: ReadonlySet<string>
 ): boolean {
-  const channelId = stringField(slackRawRecord(message).channel)
+  const raw = slackRawRecord(message)
+  const channelId = stringField(raw.channel)
+  const channelType = stringField(raw.channel_type)
   return Boolean(
     channelId
+    && !channelId.startsWith('D')
+    && channelType !== 'im'
+    && channelType !== 'mpim'
     && !denyChannelIds.has(channelId)
     && (allowChannelIds.size === 0 || allowChannelIds.has(channelId))
   )

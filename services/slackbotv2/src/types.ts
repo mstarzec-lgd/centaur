@@ -154,7 +154,7 @@ export type SlackbotV2Options = {
   apiUrl: string
   /** Enable Slack's Agent messaging experience. Must match the app manifest. */
   agentViewEnabled?: boolean
-  /** When empty, non-mention messages from every Slack channel may enter the ambient trigger gate. */
+  /** When empty, every public and private Slack channel may enter the ambient trigger gate. */
   ambientTriggerAllowChannelIds?: readonly string[]
   /** Slack channel IDs excluded from ambient handling, including when otherwise allowed. */
   ambientTriggerDenyChannelIds?: readonly string[]

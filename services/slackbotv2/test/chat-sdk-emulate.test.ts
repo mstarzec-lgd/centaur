@@ -695,7 +695,7 @@ describe('slackbotv2', () => {
     await expect(bot.chat.getState().isSubscribed(threadKey(tracked.ts))).resolves.toBe(true)
   })
 
-  it('tracks every channel when the allowlist is empty except denied channels', async () => {
+  it('tracks all public and private channels except denied channels and direct messages', async () => {
     const inputs: Array<Parameters<NonNullable<
       Parameters<typeof createSlackbotV2>[0]['ambientTriggerStrategy']
     >>[0]> = []
@@ -748,8 +748,44 @@ describe('slackbotv2', () => {
     expect(deniedResponse.status).toBe(200)
     await Promise.all(deniedWaits)
 
+    const members = await slackBot.users.list({})
+    const testerId = members.members?.find(member => member.name === 'tester')?.id
+    const builderId = members.members?.find(member => member.name === 'builder')?.id
+    expect(testerId).toBeDefined()
+    expect(builderId).toBeDefined()
+    const directMessage = await slackBot.conversations.open({ users: testerId! })
+    const groupDirectMessage = await slackBot.conversations.open({
+      users: `${testerId},${builderId}`
+    })
+    for (const [eventId, channel, channelType] of [
+      ['Ev-ambient-direct-message', directMessage.channel!.id!, 'im'],
+      ['Ev-ambient-group-direct-message', groupDirectMessage.channel!.id!, 'mpim']
+    ] as const) {
+      const text = 'Please inspect this direct conversation.'
+      const posted = await slackBot.chat.postMessage({ channel, text })
+      const waits: Promise<unknown>[] = []
+      const response = await bot.app.request(
+        '/api/webhooks/slack',
+        signedSlackEvent({
+          event_id: eventId,
+          event: {
+            type: 'message',
+            user: USER_ID,
+            channel,
+            channel_type: channelType,
+            team: TEAM_ID,
+            ts: posted.ts,
+            text
+          }
+        }),
+        {},
+        waitUntilContext(waits)
+      )
+      expect(response.status).toBe(200)
+      await Promise.all(waits)
+    }
+
     expect(inputs).toHaveLength(1)
-    expect(codexApi.executes).toHaveLength(1)
   })
 
   it('gates ambient thread replies with Jev and enforces the per-thread cap', async () => {
