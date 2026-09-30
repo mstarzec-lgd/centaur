@@ -6,6 +6,7 @@ import {
   Chat,
   Message as ChatSdkMessage,
   parseMarkdown,
+  THREAD_STATE_TTL_MS,
   type Adapter,
   type ActionEvent,
   type Attachment,
@@ -3455,6 +3456,17 @@ function ambientTriggerClaimKey(threadId: string, slot: number): string {
   return `slackbotv2:ambient-trigger:claim:${threadId}:${slot}`
 }
 
+async function ambientTriggerCapReached(
+  state: StateAdapter,
+  threadId: string,
+  maxResponses: number
+): Promise<boolean> {
+  for (let slot = 1; slot <= maxResponses; slot += 1) {
+    if (await state.get(ambientTriggerClaimKey(threadId, slot)) === null) return false
+  }
+  return true
+}
+
 async function claimAmbientTriggerSlot(
   state: StateAdapter,
   threadId: string,
@@ -3463,10 +3475,13 @@ async function claimAmbientTriggerSlot(
 ): Promise<number | null> {
   // StateAdapter guarantees setIfNotExists is atomic. Fixed per-thread slot
   // keys enforce the cap across concurrent handlers and multiple processes.
+  // Each claim uses Chat SDK's thread-state retention horizon, producing a
+  // rolling cap without retaining inactive thread keys indefinitely.
   for (let slot = 1; slot <= maxResponses; slot += 1) {
     if (await state.setIfNotExists(
       ambientTriggerClaimKey(threadId, slot),
-      messageId
+      messageId,
+      THREAD_STATE_TTL_MS
     )) return slot
   }
   return null
@@ -3485,7 +3500,7 @@ async function shouldHandleAmbientMessage(
   if (maxResponses <= 0 || !strategy) return false
 
   const trace = createHandoffTrace(thread, message, 'execute')
-  if (await state.get(ambientTriggerClaimKey(thread.id, maxResponses)) !== null) {
+  if (await ambientTriggerCapReached(state, thread.id, maxResponses)) {
     slackbotMetrics.ambientTriggerDecisions.inc({ outcome: 'cap_reached' })
     traceLog(options, 'slackbotv2_ambient_trigger_cap_reached', trace, {
       accepted_count: maxResponses,
