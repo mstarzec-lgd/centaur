@@ -72,6 +72,7 @@ const options: SlackbotV2Options = {
       ? createJevAmbientTriggerStrategy({
           apiKey: ambientTriggerApiKey!,
           apiUrl: optionalEnv('SLACKBOTV2_AMBIENT_TRIGGER_API_URL'),
+          instructions: optionalEnv('SLACKBOTV2_AMBIENT_TRIGGER_INSTRUCTIONS'),
           logger: consoleLogger,
           model: optionalEnv('SLACKBOTV2_AMBIENT_TRIGGER_MODEL'),
           threshold: probabilityEnv('SLACKBOTV2_AMBIENT_TRIGGER_THRESHOLD', 0.9),

@@ -19,6 +19,7 @@ describe('createJevAmbientTriggerStrategy', () => {
           usage: { cost: 0.000012, input_tokens: 300, output_tokens: 20 }
         })
       },
+      instructions: 'Use the deployment-specific response policy.',
       threshold: 0.9
     })
 
@@ -38,7 +39,10 @@ describe('createJevAmbientTriggerStrategy', () => {
     expect(body.model).toBe('~typesafe/jev-latest')
     expect(body.state).toEqual({ messages: MESSAGES })
     expect(body.questions).toEqual({
-      should_respond: expect.objectContaining({ type: 'noul' })
+      should_respond: expect.objectContaining({
+        instructions: 'Use the deployment-specific response policy.',
+        type: 'noul'
+      })
     })
   })
 

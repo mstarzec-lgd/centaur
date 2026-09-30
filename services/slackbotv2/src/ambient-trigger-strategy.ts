@@ -17,6 +17,7 @@ const SHOULD_RESPOND_INSTRUCTIONS = [
 
 export type JevAmbientTriggerStrategyOptions = {
   apiKey: string
+  instructions?: string
   apiUrl?: string
   fetch?: SlackbotV2Fetch
   logger?: Logger
@@ -30,6 +31,7 @@ export function createJevAmbientTriggerStrategy(
 ): AmbientTriggerStrategy {
   const apiUrl = options.apiUrl ?? DEFAULT_API_URL
   const fetchFn = options.fetch ?? fetch
+  const instructions = options.instructions ?? SHOULD_RESPOND_INSTRUCTIONS
   const model = options.model ?? DEFAULT_MODEL
   const threshold = options.threshold ?? DEFAULT_THRESHOLD
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
@@ -50,7 +52,7 @@ export function createJevAmbientTriggerStrategy(
                 false: 'Bober should stay silent and no agent execution should start.',
                 true: 'Bober should handle the current message now.'
               },
-              instructions: SHOULD_RESPOND_INSTRUCTIONS,
+              instructions,
               type: 'noul'
             }
           },
