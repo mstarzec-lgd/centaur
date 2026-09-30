@@ -317,7 +317,8 @@ function stickyOverrideRaw(
 export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
   const userName = options.userName ?? 'centaur'
   const logger = options.logger ?? noopLogger
-  const ambientTriggerChannelIds = new Set(options.ambientTriggerChannelIds ?? [])
+  const ambientTriggerAllowChannelIds = new Set(options.ambientTriggerAllowChannelIds ?? [])
+  const ambientTriggerDenyChannelIds = new Set(options.ambientTriggerDenyChannelIds ?? [])
   const slack = createSlackAdapter({
     agentView: options.agentViewEnabled === true,
     // Titles come from durable session events, including recovery.
@@ -490,7 +491,11 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
   // payloads after Chat SDK has verified the webhook and before executing.
   chat.onNewMessage(/^.*$/s, async (thread, message) => {
     const richMention = slackRichTextMentionsUser(message.raw, options.botUserId)
-    if (!richMention && !isAmbientTriggerChannel(message, ambientTriggerChannelIds)) return
+    if (!richMention && !isAmbientTriggerChannel(
+      message,
+      ambientTriggerAllowChannelIds,
+      ambientTriggerDenyChannelIds
+    )) return
     if (!(await isAllowedSlackMessage(message, options, logger))) return
     if (richMention) {
       message.isMention = true
@@ -510,7 +515,8 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
       message,
       options,
       state,
-      ambientTriggerChannelIds
+      ambientTriggerAllowChannelIds,
+      ambientTriggerDenyChannelIds
     ))) return
     await handleSlackMessageHandoff(thread, message, {
       assistantStatusRequested: true,
@@ -533,7 +539,8 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
         message,
         options,
         state,
-        ambientTriggerChannelIds
+        ambientTriggerAllowChannelIds,
+        ambientTriggerDenyChannelIds
       ))) {
         traceLog(
           options,
@@ -3446,10 +3453,15 @@ function setStringField(fields: JsonObject, key: string, value: unknown): void {
 
 function isAmbientTriggerChannel(
   message: ChatMessage,
-  channelIds: ReadonlySet<string>
+  allowChannelIds: ReadonlySet<string>,
+  denyChannelIds: ReadonlySet<string>
 ): boolean {
   const channelId = stringField(slackRawRecord(message).channel)
-  return Boolean(channelId && channelIds.has(channelId))
+  return Boolean(
+    channelId
+    && !denyChannelIds.has(channelId)
+    && (allowChannelIds.size === 0 || allowChannelIds.has(channelId))
+  )
 }
 
 function ambientTriggerClaimKey(threadId: string, slot: number): string {
@@ -3492,12 +3504,13 @@ async function shouldHandleAmbientMessage(
   message: ChatMessage,
   options: SlackbotV2Options,
   state: StateAdapter,
-  channelIds: ReadonlySet<string>
+  allowChannelIds: ReadonlySet<string>,
+  denyChannelIds: ReadonlySet<string>
 ): Promise<boolean> {
-  if (!isAmbientTriggerChannel(message, channelIds)) return false
-  const maxResponses = options.ambientTriggerMaxResponsesPerThread ?? 0
+  if (!isAmbientTriggerChannel(message, allowChannelIds, denyChannelIds)) return false
+  const maxResponses = options.ambientTriggerMaxResponsesPerThread ?? 1
   const strategy = options.ambientTriggerStrategy
-  if (maxResponses <= 0 || !strategy) return false
+  if (!strategy) return false
 
   const trace = createHandoffTrace(thread, message, 'execute')
   if (await ambientTriggerCapReached(state, thread.id, maxResponses)) {

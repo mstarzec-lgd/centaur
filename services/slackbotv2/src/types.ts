@@ -154,11 +154,13 @@ export type SlackbotV2Options = {
   apiUrl: string
   /** Enable Slack's Agent messaging experience. Must match the app manifest. */
   agentViewEnabled?: boolean
-  /** Slack channel IDs whose non-mention messages may enter the ambient trigger gate. */
-  ambientTriggerChannelIds?: readonly string[]
-  /** Per-thread cap for strategy-accepted non-mention messages. Zero disables ambient triggers. */
+  /** When empty, non-mention messages from every Slack channel may enter the ambient trigger gate. */
+  ambientTriggerAllowChannelIds?: readonly string[]
+  /** Slack channel IDs excluded from ambient handling, including when otherwise allowed. */
+  ambientTriggerDenyChannelIds?: readonly string[]
+  /** Per-thread cap for strategy-accepted non-mention messages. Defaults to one. */
   ambientTriggerMaxResponsesPerThread?: number
-  /** Gate for executing non-mention messages in configured Slack channels. */
+  /** Gate for executing non-mention messages in eligible Slack channels. */
   ambientTriggerStrategy?: AmbientTriggerStrategy
   assistantStatus?: string
   /**

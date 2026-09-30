@@ -605,12 +605,38 @@ describe('slackbotv2', () => {
     expect(codexApi.workflowEvents).toHaveLength(1)
   })
 
-  it('tracks unmentioned messages only in configured Slack channels', async () => {
+  it('keeps unmentioned channel messages silent when ambient handling is disabled', async () => {
+    const message = await postUserMessage('Please inspect this channel.')
+    const waits: Promise<unknown>[] = []
+    const response = await bot.app.request(
+      '/api/webhooks/slack',
+      signedSlackEvent({
+        event_id: 'Ev-ambient-disabled',
+        event: {
+          type: 'message',
+          user: USER_ID,
+          channel: CHANNEL_ID,
+          team: TEAM_ID,
+          ts: message.ts,
+          text: 'Please inspect this channel.'
+        }
+      }),
+      {},
+      waitUntilContext(waits)
+    )
+    expect(response.status).toBe(200)
+    await Promise.all(waits)
+
+    expect(codexApi.executes).toHaveLength(0)
+    await expect(bot.chat.getState().isSubscribed(threadKey(message.ts))).resolves.toBe(false)
+  })
+
+  it('tracks unmentioned messages only in explicitly allowed Slack channels', async () => {
     const inputs: Array<Parameters<NonNullable<
       Parameters<typeof createSlackbotV2>[0]['ambientTriggerStrategy']
     >>[0]> = []
     bot = createTestBot({
-      ambientTriggerChannelIds: [CHANNEL_ID],
+      ambientTriggerAllowChannelIds: [CHANNEL_ID],
       ambientTriggerMaxResponsesPerThread: 1,
       ambientTriggerStrategy: async input => {
         inputs.push(input)
@@ -669,14 +695,70 @@ describe('slackbotv2', () => {
     await expect(bot.chat.getState().isSubscribed(threadKey(tracked.ts))).resolves.toBe(true)
   })
 
+  it('tracks every channel when the allowlist is empty except denied channels', async () => {
+    const inputs: Array<Parameters<NonNullable<
+      Parameters<typeof createSlackbotV2>[0]['ambientTriggerStrategy']
+    >>[0]> = []
+    bot = createTestBot({
+      ambientTriggerDenyChannelIds: ['C_DENIED'],
+      ambientTriggerStrategy: async input => {
+        inputs.push(input)
+        return { probability: 0.98, respond: true }
+      }
+    })
+
+    const allowed = await postUserMessage('Please inspect this channel.')
+    const allowedWaits: Promise<unknown>[] = []
+    const allowedResponse = await bot.app.request(
+      '/api/webhooks/slack',
+      signedSlackEvent({
+        event_id: 'Ev-ambient-all-channels',
+        event: {
+          type: 'message',
+          user: USER_ID,
+          channel: CHANNEL_ID,
+          team: TEAM_ID,
+          ts: allowed.ts,
+          text: 'Please inspect this channel.'
+        }
+      }),
+      {},
+      waitUntilContext(allowedWaits)
+    )
+    expect(allowedResponse.status).toBe(200)
+    await Promise.all(allowedWaits)
+
+    const deniedWaits: Promise<unknown>[] = []
+    const deniedResponse = await bot.app.request(
+      '/api/webhooks/slack',
+      signedSlackEvent({
+        event_id: 'Ev-ambient-denied-channel',
+        event: {
+          type: 'message',
+          user: USER_ID,
+          channel: 'C_DENIED',
+          team: TEAM_ID,
+          ts: '1700000005.000200',
+          text: 'Please inspect this denied channel.'
+        }
+      }),
+      {},
+      waitUntilContext(deniedWaits)
+    )
+    expect(deniedResponse.status).toBe(200)
+    await Promise.all(deniedWaits)
+
+    expect(inputs).toHaveLength(1)
+    expect(codexApi.executes).toHaveLength(1)
+  })
+
   it('gates ambient thread replies with Jev and enforces the per-thread cap', async () => {
     const inputs: Array<Parameters<NonNullable<
       Parameters<typeof createSlackbotV2>[0]['ambientTriggerStrategy']
     >>[0]> = []
     const decisions = [false, true]
     bot = createTestBot({
-      ambientTriggerChannelIds: [CHANNEL_ID],
-      ambientTriggerMaxResponsesPerThread: 1,
+      ambientTriggerAllowChannelIds: [CHANNEL_ID],
       ambientTriggerStrategy: async input => {
         inputs.push(input)
         const respond = decisions.shift() ?? true
@@ -760,7 +842,7 @@ describe('slackbotv2', () => {
     const decisionsHeld = new Promise<void>(resolve => { releaseDecisions = resolve })
     const bothStarted = new Promise<void>(resolve => { resolveBothStarted = resolve })
     bot = createTestBot({
-      ambientTriggerChannelIds: [CHANNEL_ID],
+      ambientTriggerAllowChannelIds: [CHANNEL_ID],
       ambientTriggerMaxResponsesPerThread: 1,
       ambientTriggerStrategy: async () => {
         decisionCount += 1
@@ -813,7 +895,7 @@ describe('slackbotv2', () => {
 
   it('keeps an ambient reply silent when the trigger strategy fails', async () => {
     bot = createTestBot({
-      ambientTriggerChannelIds: [CHANNEL_ID],
+      ambientTriggerAllowChannelIds: [CHANNEL_ID],
       ambientTriggerMaxResponsesPerThread: 1,
       ambientTriggerStrategy: async () => {
         throw new Error('Jev unavailable')

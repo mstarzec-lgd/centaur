@@ -25,26 +25,27 @@ const messageOverridesStrategyMode = messageOverridesStrategyModeEnv(
 )
 const messageOverridesStrategyApiKey =
   optionalEnv('SLACKBOTV2_MESSAGE_OVERRIDES_OPENAI_API_KEY') ?? optionalEnv('OPENAI_API_KEY')
-const ambientTriggerChannelIds = stringListEnv('SLACKBOTV2_AMBIENT_TRIGGER_CHANNEL_IDS')
+const ambientTriggerEnabled = booleanEnv('SLACKBOTV2_AMBIENT_TRIGGER_ENABLED', false)
+const ambientTriggerAllowChannelIds = stringListEnv(
+  'SLACKBOTV2_AMBIENT_TRIGGER_ALLOW_CHANNEL_IDS'
+)
+const ambientTriggerDenyChannelIds = stringListEnv(
+  'SLACKBOTV2_AMBIENT_TRIGGER_DENY_CHANNEL_IDS'
+)
 const ambientTriggerMaxResponsesPerThread = numberEnv(
   'SLACKBOTV2_AMBIENT_TRIGGER_MAX_RESPONSES_PER_THREAD',
-  0
+  1
 )
 if (
   !Number.isInteger(ambientTriggerMaxResponsesPerThread)
-  || ambientTriggerMaxResponsesPerThread < 0
+  || ambientTriggerMaxResponsesPerThread <= 0
 ) {
-  throw new Error('SLACKBOTV2_AMBIENT_TRIGGER_MAX_RESPONSES_PER_THREAD must be a non-negative integer')
-}
-if (ambientTriggerMaxResponsesPerThread > 0 && ambientTriggerChannelIds.length === 0) {
-  throw new Error(
-    'SLACKBOTV2_AMBIENT_TRIGGER_CHANNEL_IDS must include at least one Slack channel ID when ambient triggers are enabled'
-  )
+  throw new Error('SLACKBOTV2_AMBIENT_TRIGGER_MAX_RESPONSES_PER_THREAD must be a positive integer')
 }
 const ambientTriggerApiKey =
   optionalEnv('SLACKBOTV2_AMBIENT_TRIGGER_OPENROUTER_API_KEY')
   ?? optionalEnv('OPENROUTER_API_KEY')
-if (ambientTriggerMaxResponsesPerThread > 0 && !ambientTriggerApiKey) {
+if (ambientTriggerEnabled && !ambientTriggerApiKey) {
   throw new Error(
     'SLACKBOTV2_AMBIENT_TRIGGER_OPENROUTER_API_KEY or OPENROUTER_API_KEY is required when ambient triggers are enabled'
   )
@@ -72,10 +73,11 @@ const consoleLogger = {
 const options: SlackbotV2Options = {
   apiUrl,
   agentViewEnabled: booleanEnv('SLACKBOTV2_AGENT_VIEW_ENABLED', false),
-  ambientTriggerChannelIds,
+  ambientTriggerAllowChannelIds,
+  ambientTriggerDenyChannelIds,
   ambientTriggerMaxResponsesPerThread,
   ambientTriggerStrategy:
-    ambientTriggerMaxResponsesPerThread > 0
+    ambientTriggerEnabled
       ? createJevAmbientTriggerStrategy({
           apiKey: ambientTriggerApiKey!,
           apiUrl: optionalEnv('SLACKBOTV2_AMBIENT_TRIGGER_API_URL'),
@@ -155,8 +157,10 @@ console.log(
     event: 'slackbotv2_started',
     service: 'slackbotv2',
     agent_view_enabled: options.agentViewEnabled,
-    ambient_trigger_enabled: ambientTriggerMaxResponsesPerThread > 0,
-    ambient_trigger_channel_count: ambientTriggerChannelIds.length,
+    ambient_trigger_enabled: ambientTriggerEnabled,
+    ambient_trigger_allow_channel_count: ambientTriggerAllowChannelIds.length,
+    ambient_trigger_deny_channel_count: ambientTriggerDenyChannelIds.length,
+    ambient_trigger_all_channels: ambientTriggerEnabled && ambientTriggerAllowChannelIds.length === 0,
     ambient_trigger_max_responses_per_thread: ambientTriggerMaxResponsesPerThread,
     ambient_trigger_model:
       optionalEnv('SLACKBOTV2_AMBIENT_TRIGGER_MODEL') ?? '~typesafe/jev-latest',
