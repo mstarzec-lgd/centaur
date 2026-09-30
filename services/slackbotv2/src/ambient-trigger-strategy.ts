@@ -57,6 +57,8 @@ export function createJevAmbientTriggerStrategy(
             }
           },
           state: {
+            channel_id: input.channelId,
+            is_thread_reply: input.isThreadReply,
             messages: input.messages
           }
         }),

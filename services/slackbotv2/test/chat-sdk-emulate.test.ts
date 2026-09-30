@@ -686,6 +686,8 @@ describe('slackbotv2', () => {
     await Promise.all(trackedWaits)
 
     expect(inputs).toHaveLength(1)
+    expect(inputs[0]!.channelId).toBe(CHANNEL_ID)
+    expect(inputs[0]!.isThreadReply).toBe(false)
     expect(inputs[0]!.messages.at(-1)).toEqual({
       author: 'user',
       current: true,
@@ -853,6 +855,8 @@ describe('slackbotv2', () => {
     }
 
     expect(inputs).toHaveLength(2)
+    expect(inputs.map(input => input.channelId)).toEqual([CHANNEL_ID, CHANNEL_ID])
+    expect(inputs.map(input => input.isThreadReply)).toEqual([true, true])
     expect(inputs[0]!.messages.some(message => message.author === 'bober')).toBe(true)
     expect(inputs[0]!.messages.at(-1)).toEqual({
       author: 'user',

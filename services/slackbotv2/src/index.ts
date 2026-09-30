@@ -3539,7 +3539,8 @@ async function shouldHandleAmbientMessage(
       outcome = 'skip_empty'
       return false
     }
-    const decision = await strategy({ messages })
+    const channelId = stringField(slackRawRecord(message).channel)
+    const decision = await strategy({ channelId, isThreadReply: isSlackThreadReply(message), messages })
     if (decision.usage?.costUsd !== undefined) {
       slackbotMetrics.ambientTriggerCostUsd.inc({}, decision.usage.costUsd)
     }

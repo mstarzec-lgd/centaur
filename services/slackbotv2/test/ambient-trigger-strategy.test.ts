@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { createJevAmbientTriggerStrategy } from '../src/ambient-trigger-strategy'
 
+const CHANNEL_ID = 'C0B4ZDRQ6MC'
 const MESSAGES = [
   { author: 'bober' as const, current: false, text: 'I can check that deployment.' },
   { author: 'user' as const, current: true, text: 'please do' }
@@ -23,7 +24,7 @@ describe('createJevAmbientTriggerStrategy', () => {
       threshold: 0.9
     })
 
-    await expect(strategy({ messages: MESSAGES })).resolves.toEqual({
+    await expect(strategy({ channelId: CHANNEL_ID, isThreadReply: false, messages: MESSAGES })).resolves.toEqual({
       model: 'typesafe/jev-1.13-20260917',
       probability: 0.93,
       respond: true,
@@ -37,7 +38,7 @@ describe('createJevAmbientTriggerStrategy', () => {
     })
     const body = JSON.parse(String(requests[0]!.init?.body)) as Record<string, unknown>
     expect(body.model).toBe('~typesafe/jev-latest')
-    expect(body.state).toEqual({ messages: MESSAGES })
+    expect(body.state).toEqual({ channel_id: CHANNEL_ID, is_thread_reply: false, messages: MESSAGES })
     expect(body.questions).toEqual({
       should_respond: expect.objectContaining({
         instructions: 'Use the deployment-specific response policy.',
@@ -55,7 +56,7 @@ describe('createJevAmbientTriggerStrategy', () => {
       threshold: 0.9
     })
 
-    await expect(strategy({ messages: MESSAGES })).resolves.toEqual({
+    await expect(strategy({ channelId: CHANNEL_ID, isThreadReply: true, messages: MESSAGES })).resolves.toEqual({
       model: undefined,
       probability: 0.89,
       respond: false,
@@ -69,7 +70,7 @@ describe('createJevAmbientTriggerStrategy', () => {
       fetch: async () => Response.json({ answers: {} })
     })
 
-    await expect(strategy({ messages: MESSAGES })).rejects.toThrow(
+    await expect(strategy({ channelId: CHANNEL_ID, isThreadReply: false, messages: MESSAGES })).rejects.toThrow(
       'did not include a valid should_respond probability'
     )
   })
@@ -85,6 +86,6 @@ describe('createJevAmbientTriggerStrategy', () => {
       timeoutMs: 5
     })
 
-    await expect(strategy({ messages: MESSAGES })).rejects.toMatchObject({ name: 'AbortError' })
+    await expect(strategy({ channelId: CHANNEL_ID, isThreadReply: false, messages: MESSAGES })).rejects.toMatchObject({ name: 'AbortError' })
   })
 })

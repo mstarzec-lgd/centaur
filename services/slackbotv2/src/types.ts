@@ -128,6 +128,8 @@ export type AmbientTriggerStrategyResult = {
 }
 
 export type AmbientTriggerStrategy = (input: {
+  channelId: string
+  isThreadReply: boolean
   messages: readonly AmbientTriggerMessage[]
 }) => Promise<AmbientTriggerStrategyResult>
 
