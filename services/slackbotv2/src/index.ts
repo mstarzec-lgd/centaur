@@ -316,6 +316,7 @@ function stickyOverrideRaw(
 export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
   const userName = options.userName ?? 'centaur'
   const logger = options.logger ?? noopLogger
+  const ambientTriggerChannelIds = new Set(options.ambientTriggerChannelIds ?? [])
   const slack = createSlackAdapter({
     agentView: options.agentViewEnabled === true,
     // Titles come from durable session events, including recovery.
@@ -487,9 +488,28 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
   // app_mention events. Alertmanager uses attachment.pretext, so inspect rich
   // payloads after Chat SDK has verified the webhook and before executing.
   chat.onNewMessage(/^.*$/s, async (thread, message) => {
-    if (!slackRichTextMentionsUser(message.raw, options.botUserId)) return
+    const richMention = slackRichTextMentionsUser(message.raw, options.botUserId)
+    if (!richMention && !isAmbientTriggerChannel(message, ambientTriggerChannelIds)) return
     if (!(await isAllowedSlackMessage(message, options, logger))) return
-    message.isMention = true
+    if (richMention) {
+      message.isMention = true
+      await handleSlackMessageHandoff(thread, message, {
+        assistantStatusRequested: true,
+        mode: 'execute',
+        options,
+        state,
+        steeringReactions,
+        subscribe: true,
+        trigger: 'new_mention'
+      })
+      return
+    }
+    if (!(await shouldHandleAmbientMessage(
+      thread,
+      message,
+      options,
+      ambientTriggerChannelIds
+    ))) return
     await handleSlackMessageHandoff(thread, message, {
       assistantStatusRequested: true,
       mode: 'execute',
@@ -497,7 +517,7 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
       state,
       steeringReactions,
       subscribe: true,
-      trigger: 'new_mention'
+      trigger: 'ambient_channel_message'
     })
   })
 
@@ -506,7 +526,12 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
     if (slackRichTextMentionsUser(message.raw, options.botUserId)) message.isMention = true
     let trigger = 'subscribed_message'
     if (message.isMention !== true) {
-      if (!(await shouldHandleAmbientMessage(thread, message, options))) {
+      if (!(await shouldHandleAmbientMessage(
+        thread,
+        message,
+        options,
+        ambientTriggerChannelIds
+      ))) {
         traceLog(
           options,
           'slackbotv2_subscribed_message_without_mention_ignored',
@@ -3416,11 +3441,21 @@ function setStringField(fields: JsonObject, key: string, value: unknown): void {
   if (text) fields[key] = text
 }
 
+function isAmbientTriggerChannel(
+  message: ChatMessage,
+  channelIds: ReadonlySet<string>
+): boolean {
+  const channelId = stringField(slackRawRecord(message).channel)
+  return Boolean(channelId && channelIds.has(channelId))
+}
+
 async function shouldHandleAmbientMessage(
   thread: Thread<SlackbotV2ThreadState>,
   message: ChatMessage,
-  options: SlackbotV2Options
+  options: SlackbotV2Options,
+  channelIds: ReadonlySet<string>
 ): Promise<boolean> {
+  if (!isAmbientTriggerChannel(message, channelIds)) return false
   const maxResponses = options.ambientTriggerMaxResponsesPerThread ?? 0
   const strategy = options.ambientTriggerStrategy
   if (maxResponses <= 0 || !strategy) return false

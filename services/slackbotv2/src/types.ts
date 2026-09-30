@@ -154,10 +154,12 @@ export type SlackbotV2Options = {
   apiUrl: string
   /** Enable Slack's Agent messaging experience. Must match the app manifest. */
   agentViewEnabled?: boolean
-  /** Gate for executing subscribed Slack messages that do not mention the bot. */
-  ambientTriggerStrategy?: AmbientTriggerStrategy
+  /** Slack channel IDs whose non-mention messages may enter the ambient trigger gate. */
+  ambientTriggerChannelIds?: readonly string[]
   /** Per-thread cap for strategy-accepted non-mention messages. Zero disables ambient triggers. */
   ambientTriggerMaxResponsesPerThread?: number
+  /** Gate for executing non-mention messages in configured Slack channels. */
+  ambientTriggerStrategy?: AmbientTriggerStrategy
   assistantStatus?: string
   /**
    * When enabled, session.activity_summary events update Slack's assistant

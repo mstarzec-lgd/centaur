@@ -240,7 +240,7 @@ export const slackbotMetrics = {
     name: 'slackbotv2_ambient_trigger_cost_usd_total'
   }),
   ambientTriggerDecisions: counter({
-    help: 'Subscribed non-mention messages evaluated by the ambient trigger gate.',
+    help: 'Allowlisted non-mention Slack messages evaluated by the ambient trigger gate.',
     labelNames: ['outcome'],
     name: 'slackbotv2_ambient_trigger_decisions_total'
   }),

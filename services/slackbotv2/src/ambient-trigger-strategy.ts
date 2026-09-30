@@ -8,7 +8,7 @@ const DEFAULT_THRESHOLD = 0.9
 const DEFAULT_TIMEOUT_MS = 750
 
 const SHOULD_RESPOND_INSTRUCTIONS = [
-  'Should Bober respond to the current Slack message in this subscribed thread?',
+  'Should Bober respond to the current Slack message?',
   'The current message is the last item in messages and has current=true.',
   'Answer yes when the current message directly or implicitly asks Bober a question, requests work or a decision, asks to continue or change Bober\'s work, or needs Bober to correct an important misunderstanding or unblock the thread.',
   'Answer no for acknowledgements, thanks, reactions, social chatter, messages addressed to another participant, discussion between humans, quoted or pasted requests, and context that does not ask Bober to act now.',

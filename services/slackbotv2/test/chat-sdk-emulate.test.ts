@@ -605,12 +605,77 @@ describe('slackbotv2', () => {
     expect(codexApi.workflowEvents).toHaveLength(1)
   })
 
+  it('tracks unmentioned messages only in configured Slack channels', async () => {
+    const inputs: Array<Parameters<NonNullable<
+      Parameters<typeof createSlackbotV2>[0]['ambientTriggerStrategy']
+    >>[0]> = []
+    bot = createTestBot({
+      ambientTriggerChannelIds: [CHANNEL_ID],
+      ambientTriggerMaxResponsesPerThread: 1,
+      ambientTriggerStrategy: async input => {
+        inputs.push(input)
+        return { probability: 0.98, respond: true }
+      }
+    })
+
+    const untrackedWaits: Promise<unknown>[] = []
+    const untrackedResponse = await bot.app.request(
+      '/api/webhooks/slack',
+      signedSlackEvent({
+        event_id: 'Ev-ambient-untracked-channel',
+        event: {
+          type: 'message',
+          user: USER_ID,
+          channel: 'C_UNTRACKED',
+          team: TEAM_ID,
+          ts: '1700000005.000100',
+          text: 'Please inspect this untracked channel.'
+        }
+      }),
+      {},
+      waitUntilContext(untrackedWaits)
+    )
+    expect(untrackedResponse.status).toBe(200)
+    await Promise.all(untrackedWaits)
+
+    const tracked = await postUserMessage('Please inspect this tracked channel.')
+    const trackedWaits: Promise<unknown>[] = []
+    const trackedResponse = await bot.app.request(
+      '/api/webhooks/slack',
+      signedSlackEvent({
+        event_id: 'Ev-ambient-tracked-channel',
+        event: {
+          type: 'message',
+          user: USER_ID,
+          channel: CHANNEL_ID,
+          team: TEAM_ID,
+          ts: tracked.ts,
+          text: 'Please inspect this tracked channel.'
+        }
+      }),
+      {},
+      waitUntilContext(trackedWaits)
+    )
+    expect(trackedResponse.status).toBe(200)
+    await Promise.all(trackedWaits)
+
+    expect(inputs).toHaveLength(1)
+    expect(inputs[0]!.messages.at(-1)).toEqual({
+      author: 'user',
+      current: true,
+      text: 'Please inspect this tracked channel.'
+    })
+    expect(codexApi.executes).toHaveLength(1)
+    await expect(bot.chat.getState().isSubscribed(threadKey(tracked.ts))).resolves.toBe(true)
+  })
+
   it('gates ambient thread replies with Jev and enforces the per-thread cap', async () => {
     const inputs: Array<Parameters<NonNullable<
       Parameters<typeof createSlackbotV2>[0]['ambientTriggerStrategy']
     >>[0]> = []
     const decisions = [false, true]
     bot = createTestBot({
+      ambientTriggerChannelIds: [CHANNEL_ID],
       ambientTriggerMaxResponsesPerThread: 1,
       ambientTriggerStrategy: async input => {
         inputs.push(input)
@@ -693,6 +758,7 @@ describe('slackbotv2', () => {
 
   it('keeps an ambient reply silent when the trigger strategy fails', async () => {
     bot = createTestBot({
+      ambientTriggerChannelIds: [CHANNEL_ID],
       ambientTriggerMaxResponsesPerThread: 1,
       ambientTriggerStrategy: async () => {
         throw new Error('Jev unavailable')

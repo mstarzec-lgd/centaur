@@ -25,6 +25,7 @@ const messageOverridesStrategyMode = messageOverridesStrategyModeEnv(
 )
 const messageOverridesStrategyApiKey =
   optionalEnv('SLACKBOTV2_MESSAGE_OVERRIDES_OPENAI_API_KEY') ?? optionalEnv('OPENAI_API_KEY')
+const ambientTriggerChannelIds = stringListEnv('SLACKBOTV2_AMBIENT_TRIGGER_CHANNEL_IDS')
 const ambientTriggerMaxResponsesPerThread = numberEnv(
   'SLACKBOTV2_AMBIENT_TRIGGER_MAX_RESPONSES_PER_THREAD',
   0
@@ -34,6 +35,11 @@ if (
   || ambientTriggerMaxResponsesPerThread < 0
 ) {
   throw new Error('SLACKBOTV2_AMBIENT_TRIGGER_MAX_RESPONSES_PER_THREAD must be a non-negative integer')
+}
+if (ambientTriggerMaxResponsesPerThread > 0 && ambientTriggerChannelIds.length === 0) {
+  throw new Error(
+    'SLACKBOTV2_AMBIENT_TRIGGER_CHANNEL_IDS must include at least one Slack channel ID when ambient triggers are enabled'
+  )
 }
 const ambientTriggerApiKey =
   optionalEnv('SLACKBOTV2_AMBIENT_TRIGGER_OPENROUTER_API_KEY')
@@ -66,6 +72,7 @@ const consoleLogger = {
 const options: SlackbotV2Options = {
   apiUrl,
   agentViewEnabled: booleanEnv('SLACKBOTV2_AGENT_VIEW_ENABLED', false),
+  ambientTriggerChannelIds,
   ambientTriggerMaxResponsesPerThread,
   ambientTriggerStrategy:
     ambientTriggerMaxResponsesPerThread > 0
@@ -149,6 +156,7 @@ console.log(
     service: 'slackbotv2',
     agent_view_enabled: options.agentViewEnabled,
     ambient_trigger_enabled: ambientTriggerMaxResponsesPerThread > 0,
+    ambient_trigger_channel_count: ambientTriggerChannelIds.length,
     ambient_trigger_max_responses_per_thread: ambientTriggerMaxResponsesPerThread,
     ambient_trigger_model:
       optionalEnv('SLACKBOTV2_AMBIENT_TRIGGER_MODEL') ?? '~typesafe/jev-latest',
@@ -169,6 +177,15 @@ console.log(
 function optionalEnv(name: string): string | undefined {
   const value = process.env[name]?.trim()
   return value ? value : undefined
+}
+
+function stringListEnv(name: string): string[] {
+  return [...new Set(
+    (optionalEnv(name) ?? '')
+      .split(/[\s,]+/)
+      .map(value => value.trim())
+      .filter(Boolean)
+  )]
 }
 
 function requiredEnv(name: string): string {
