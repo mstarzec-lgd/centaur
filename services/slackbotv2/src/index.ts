@@ -3656,7 +3656,7 @@ function ambientTriggerMessage(
   const actorId = slackActorId(raw)
   const author =
     actorId && options.botUserId && actorId === options.botUserId
-      ? 'bober'
+      ? 'centaur'
       : raw.bot_id || raw.bot_profile || stringField(raw.subtype) === 'bot_message'
         ? 'bot'
         : 'user'

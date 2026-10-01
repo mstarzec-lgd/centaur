@@ -3,7 +3,7 @@ import { createJevAmbientTriggerStrategy } from '../src/ambient-trigger-strategy
 
 const CHANNEL_ID = 'C0B4ZDRQ6MC'
 const MESSAGES = [
-  { author: 'bober' as const, current: false, text: 'I can check that deployment.' },
+  { author: 'centaur' as const, current: false, text: 'I can check that deployment.' },
   { author: 'user' as const, current: true, text: 'please do' }
 ]
 

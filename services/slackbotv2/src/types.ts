@@ -112,7 +112,7 @@ export type SlackbotV2InterruptSessionResponse = {
 export type SlackbotV2Fetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
 export type AmbientTriggerMessage = {
-  author: 'bober' | 'bot' | 'user'
+  author: 'centaur' | 'bot' | 'user'
   current: boolean
   text: string
 }

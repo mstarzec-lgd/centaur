@@ -803,7 +803,7 @@ describe('slackbotv2', () => {
         return { probability: respond ? 0.97 : 0.12, respond }
       }
     })
-    const parent = await postUserMessage('Can Bober inspect the deploy?')
+    const parent = await postUserMessage('Can Centaur inspect the deploy?')
     const mention = await postUserMessage(`<@${BOT_USER_ID}> start with the current state`, parent.ts)
     const mentionWaits: Promise<unknown>[] = []
     const mentionResponse = await bot.app.request(
@@ -857,7 +857,7 @@ describe('slackbotv2', () => {
     expect(inputs).toHaveLength(2)
     expect(inputs.map(input => input.channelId)).toEqual([CHANNEL_ID, CHANNEL_ID])
     expect(inputs.map(input => input.isThreadReply)).toEqual([true, true])
-    expect(inputs[0]!.messages.some(message => message.author === 'bober')).toBe(true)
+    expect(inputs[0]!.messages.some(message => message.author === 'centaur')).toBe(true)
     expect(inputs[0]!.messages.at(-1)).toEqual({
       author: 'user',
       current: true,
