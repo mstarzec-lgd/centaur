@@ -933,6 +933,43 @@ describe('slackbotv2', () => {
     expect(codexApi.executes).toHaveLength(1)
   })
 
+  it('skips ambient decisions when the recent thread context is beyond the page limit', async () => {
+    let decisions = 0
+    bot = createTestBot({
+      ambientTriggerStrategy: async () => {
+        decisions += 1
+        return { probability: 0.99, respond: true }
+      }
+    })
+    const parent = await postUserMessage('Original request.')
+    slackApi.simulateLongThread(parent.ts)
+    const current = await postUserMessage('Please continue with the latest update.', parent.ts)
+    const waits: Promise<unknown>[] = []
+    const response = await bot.app.request(
+      '/api/webhooks/slack',
+      signedSlackEvent({
+        event_id: 'Ev-ambient-context-page-limit',
+        event: {
+          type: 'message',
+          user: USER_ID,
+          channel: CHANNEL_ID,
+          team: TEAM_ID,
+          ts: current.ts,
+          thread_ts: parent.ts,
+          text: 'Please continue with the latest update.'
+        }
+      }),
+      {},
+      waitUntilContext(waits)
+    )
+    expect(response.status).toBe(200)
+    await Promise.all(waits)
+    expect(slackApi.longThreadPageCursors).toEqual(['', 'page-1', 'page-2'])
+
+    expect(decisions).toBe(0)
+    expect(codexApi.executes).toHaveLength(0)
+  }, 30_000)
+
   it('keeps an ambient reply silent when the trigger strategy fails', async () => {
     bot = createTestBot({
       ambientTriggerAllowChannelIds: [CHANNEL_ID],
@@ -7162,6 +7199,7 @@ type PatchedSlackApi = {
   addFileToMessage(channel: string, ts: string, file: Record<string, unknown>): void
   botInfoRequestCount(botId: string): number
   calls: StreamCall[]
+  longThreadPageCursors: string[]
   close(): Promise<void>
   failRepliesWithThreadNotFound(channel: string, ts: string): void
   failStreamAppendsAfter(count: number, error: string): void
@@ -7173,6 +7211,7 @@ type PatchedSlackApi = {
   respondToNextConversationsJoin(status: number, body: Record<string, unknown>): void
   respondToNextReaction(status: number, body: Record<string, unknown>): void
   setBotInfo(botId: string, bot: Record<string, unknown>): void
+  simulateLongThread(threadTs: string): void
   setFileInfo(fileId: string, file: Record<string, unknown>): void
   setUserProfile(userId: string, profile: Record<string, unknown>): void
   userProfileMethodRequestCount(userId: string, method: string): number
@@ -7232,6 +7271,7 @@ async function startPatchedSlackApi(emulatorUrl: string): Promise<PatchedSlackAp
   const userProfiles = new Map<string, Record<string, unknown>>()
   const userProfileRequests = new Map<string, number>()
   const threadNotFoundReplies = new Set<string>()
+  const longThread = { ts: '', pageCursors: [] as string[] }
   let assistantStatusGate: Promise<void> | null = null
   let releaseAssistantStatusGate: (() => void) | null = null
   let maxStreamStopChars: number | null = null
@@ -7261,6 +7301,7 @@ async function startPatchedSlackApi(emulatorUrl: string): Promise<PatchedSlackAp
       fileInfo,
       fileInfoRequests,
       maxStreamStopChars,
+      longThread,
       stopFailure,
       port,
       reactionResponses,
@@ -7285,6 +7326,7 @@ async function startPatchedSlackApi(emulatorUrl: string): Promise<PatchedSlackAp
       return botInfoRequests.get(botId) ?? 0
     },
     calls,
+    longThreadPageCursors: longThread.pageCursors,
     url: `http://127.0.0.1:${port}`,
     failRepliesWithThreadNotFound(channel: string, ts: string) {
       threadNotFoundReplies.add(slackReplyKey(channel, ts))
@@ -7327,12 +7369,17 @@ async function startPatchedSlackApi(emulatorUrl: string): Promise<PatchedSlackAp
       streams.clear()
       userProfiles.clear()
       userProfileRequests.clear()
+      longThread.ts = ''
+      longThread.pageCursors.length = 0
     },
     respondToNextConversationsJoin(status: number, body: Record<string, unknown>) {
       conversationsJoinResponses.push({ body, status })
     },
     respondToNextReaction(status: number, body: Record<string, unknown>) {
       reactionResponses.push({ body, status })
+    },
+    simulateLongThread(threadTs: string) {
+      longThread.ts = threadTs
     },
     setBotInfo(botId: string, bot: Record<string, unknown>) {
       botInfo.set(botId, bot)
@@ -7365,6 +7412,7 @@ async function handlePatchedSlackRequest(
     conversationsJoinResponses: QueuedSlackApiResponse[]
     fileInfo: Map<string, Record<string, unknown>>
     fileInfoRequests: Map<string, number>
+    longThread: { ts: string; pageCursors: string[] }
     maxStreamStopChars: number | null
     stopFailure: { remaining: number }
     port: number
@@ -7577,6 +7625,21 @@ async function handlePatchedSlackRequest(
       )
     ) {
       await sendWebResponse(res, Response.json({ ok: false, error: 'thread_not_found' }))
+      return
+    }
+    if (input.longThread.ts === stringField(body.ts) && stringField(body.channel) === CHANNEL_ID) {
+      const cursor = stringField(body.cursor)
+      input.longThread.pageCursors.push(cursor)
+      const page = input.longThread.pageCursors.length - 1
+      await sendWebResponse(res, Response.json({
+        ok: true,
+        messages: Array.from({ length: 100 }, (_, index) => ({
+          ts: `${page * 100 + index + 1}.000000`,
+          text: `Old reply ${page * 100 + index + 1}`,
+          user: USER_ID
+        })),
+        response_metadata: { next_cursor: `page-${page + 1}` }
+      }))
       return
     }
     if (input.threadMessageFiles.size > 0) {

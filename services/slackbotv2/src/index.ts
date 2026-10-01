@@ -3625,6 +3625,9 @@ async function collectAmbientTriggerContext(
       cursor = response.nextCursor
       if (!cursor) break
     }
+    if (cursor) {
+      throw new Error('ambient trigger thread context exceeds the Slack page limit')
+    }
   }
 
   const current = ambientTriggerMessage(options, rawCurrent, true, currentMessage.text)
