@@ -111,6 +111,26 @@ export type SlackbotV2InterruptSessionResponse = {
 
 export type SlackbotV2Fetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
+export type AmbientTriggerMessage = {
+  author: 'bober' | 'bot' | 'user'
+  current: boolean
+  text: string
+}
+
+export type AmbientTriggerStrategyResult = {
+  model?: string
+  probability: number
+  respond: boolean
+  usage?: {
+    costUsd?: number
+    inputTokens?: number
+  }
+}
+
+export type AmbientTriggerStrategy = (input: {
+  messages: readonly AmbientTriggerMessage[]
+}) => Promise<AmbientTriggerStrategyResult>
+
 export type SlackbotV2BlockActionPayload = {
   workflow_message?: JsonObject
   action_id: string
@@ -134,6 +154,10 @@ export type SlackbotV2Options = {
   apiUrl: string
   /** Enable Slack's Agent messaging experience. Must match the app manifest. */
   agentViewEnabled?: boolean
+  /** Gate for executing subscribed Slack messages that do not mention the bot. */
+  ambientTriggerStrategy?: AmbientTriggerStrategy
+  /** Per-thread cap for strategy-accepted non-mention messages. Zero disables ambient triggers. */
+  ambientTriggerMaxResponsesPerThread?: number
   assistantStatus?: string
   /**
    * When enabled, session.activity_summary events update Slack's assistant
@@ -235,6 +259,8 @@ export type SlackbotV2 = {
 
 export type SlackbotV2ThreadState = {
   activeExecution?: boolean
+  /** Number of non-mention messages accepted by the ambient trigger strategy. */
+  ambientTriggerAcceptedCount?: number
   executedMessageIds?: string[]
   forwardedMessageIds?: string[]
   /** Last thread-level harness selected by Slack flags. Null clears persisted state. */

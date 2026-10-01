@@ -605,6 +605,145 @@ describe('slackbotv2', () => {
     expect(codexApi.workflowEvents).toHaveLength(1)
   })
 
+  it('gates ambient thread replies with Jev and enforces the per-thread cap', async () => {
+    const inputs: Array<Parameters<NonNullable<
+      Parameters<typeof createSlackbotV2>[0]['ambientTriggerStrategy']
+    >>[0]> = []
+    const decisions = [false, true]
+    bot = createTestBot({
+      ambientTriggerMaxResponsesPerThread: 1,
+      ambientTriggerStrategy: async input => {
+        inputs.push(input)
+        const respond = decisions.shift() ?? true
+        return { probability: respond ? 0.97 : 0.12, respond }
+      }
+    })
+    const parent = await postUserMessage('Can Bober inspect the deploy?')
+    const mention = await postUserMessage(`<@${BOT_USER_ID}> start with the current state`, parent.ts)
+    const mentionWaits: Promise<unknown>[] = []
+    const mentionResponse = await bot.app.request(
+      '/api/webhooks/slack',
+      signedSlackEvent({
+        event_id: 'Ev-ambient-initial-mention',
+        event: {
+          type: 'app_mention',
+          user: USER_ID,
+          channel: CHANNEL_ID,
+          team: TEAM_ID,
+          ts: mention.ts,
+          thread_ts: parent.ts,
+          text: `<@${BOT_USER_ID}> start with the current state`
+        }
+      }),
+      {},
+      waitUntilContext(mentionWaits)
+    )
+    expect(mentionResponse.status).toBe(200)
+    await Promise.all(mentionWaits)
+
+    for (const [index, text] of [
+      'thanks, discussing this with the team',
+      'please continue and check the failed plan',
+      'also inspect the apply logs'
+    ].entries()) {
+      const followUp = await postUserMessage(text, parent.ts)
+      const waits: Promise<unknown>[] = []
+      const response = await bot.app.request(
+        '/api/webhooks/slack',
+        signedSlackEvent({
+          event_id: `Ev-ambient-follow-up-${index}`,
+          event: {
+            type: 'message',
+            user: USER_ID,
+            channel: CHANNEL_ID,
+            team: TEAM_ID,
+            ts: followUp.ts,
+            thread_ts: parent.ts,
+            text
+          }
+        }),
+        {},
+        waitUntilContext(waits)
+      )
+      expect(response.status).toBe(200)
+      await Promise.all(waits)
+    }
+
+    expect(inputs).toHaveLength(2)
+    expect(inputs[0]!.messages.some(message => message.author === 'bober')).toBe(true)
+    expect(inputs[0]!.messages.at(-1)).toEqual({
+      author: 'user',
+      current: true,
+      text: 'thanks, discussing this with the team'
+    })
+    expect(inputs[1]!.messages.at(-1)).toEqual({
+      author: 'user',
+      current: true,
+      text: 'please continue and check the failed plan'
+    })
+    expect(codexApi.executes).toHaveLength(2)
+    expect(codexApi.executes[1]!.body.idempotency_key).toBeDefined()
+    expect(JSON.stringify(codexApi.executes[1]!.body.input_lines)).toContain(
+      'please continue and check the failed plan'
+    )
+    await expect(bot.chat.thread(threadKey(parent.ts)).state).resolves.toMatchObject({
+      ambientTriggerAcceptedCount: 1
+    })
+  })
+
+  it('keeps an ambient reply silent when the trigger strategy fails', async () => {
+    bot = createTestBot({
+      ambientTriggerMaxResponsesPerThread: 1,
+      ambientTriggerStrategy: async () => {
+        throw new Error('Jev unavailable')
+      }
+    })
+    const parent = await postUserMessage('Investigate the deploy.')
+    const mention = await postUserMessage(`<@${BOT_USER_ID}> start`, parent.ts)
+    const mentionWaits: Promise<unknown>[] = []
+    await bot.app.request(
+      '/api/webhooks/slack',
+      signedSlackEvent({
+        event_id: 'Ev-ambient-failure-initial-mention',
+        event: {
+          type: 'app_mention',
+          user: USER_ID,
+          channel: CHANNEL_ID,
+          team: TEAM_ID,
+          ts: mention.ts,
+          thread_ts: parent.ts,
+          text: `<@${BOT_USER_ID}> start`
+        }
+      }),
+      {},
+      waitUntilContext(mentionWaits)
+    )
+    await Promise.all(mentionWaits)
+
+    const followUp = await postUserMessage('please continue', parent.ts)
+    const followUpWaits: Promise<unknown>[] = []
+    const response = await bot.app.request(
+      '/api/webhooks/slack',
+      signedSlackEvent({
+        event_id: 'Ev-ambient-failure-follow-up',
+        event: {
+          type: 'message',
+          user: USER_ID,
+          channel: CHANNEL_ID,
+          team: TEAM_ID,
+          ts: followUp.ts,
+          thread_ts: parent.ts,
+          text: 'please continue'
+        }
+      }),
+      {},
+      waitUntilContext(followUpWaits)
+    )
+    expect(response.status).toBe(200)
+    await Promise.all(followUpWaits)
+    expect(codexApi.executes).toHaveLength(1)
+  })
+
   it('collects ignored subscribed messages when the bot is next mentioned', async () => {
     const parent = await postUserMessage('The deploy context is above.')
     const firstMention = await postUserMessage(

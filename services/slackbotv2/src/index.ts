@@ -85,6 +85,7 @@ import {
   type SteeringReactionController
 } from './steering-reaction'
 import type {
+  AmbientTriggerMessage,
   ForwardSessionInput,
   JsonObject,
   SlackbotV2,
@@ -113,6 +114,9 @@ import {
 } from './utils'
 
 export type {
+  AmbientTriggerMessage,
+  AmbientTriggerStrategy,
+  AmbientTriggerStrategyResult,
   SlackbotV2,
   SlackbotV2ApiAttachment,
   SlackbotV2ApiAuthor,
@@ -182,6 +186,10 @@ const LATE_SLACK_FILE_IDLE_POLL_MS = 500
 const LATE_SLACK_FILE_MESSAGE_TEXT = 'Late Slack file attachment for the previous message.'
 const SLACK_BLOCK_ACTION_DEDUPE_TTL_MS = 24 * 60 * 60 * 1000
 const SLACK_BLOCK_ACTION_LEASE_TTL_MS = 60 * 1000
+const AMBIENT_TRIGGER_CONTEXT_MAX_MESSAGES = 20
+const AMBIENT_TRIGGER_CONTEXT_MAX_CHARS = 16_000
+const AMBIENT_TRIGGER_CONTEXT_PAGE_SIZE = 100
+const AMBIENT_TRIGGER_CONTEXT_MAX_PAGES = 3
 
 type PendingLateSlackFileMention = {
   channel: string
@@ -496,23 +504,28 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
   chat.onSubscribedMessage(async (thread, message) => {
     if (!(await isAllowedSlackMessage(message, options, logger))) return
     if (slackRichTextMentionsUser(message.raw, options.botUserId)) message.isMention = true
+    let trigger = 'subscribed_message'
     if (message.isMention !== true) {
-      traceLog(
-        options,
-        'slackbotv2_subscribed_message_without_mention_ignored',
-        createHandoffTrace(thread, message, 'append'),
-        { trigger: 'subscribed_message' }
-      )
-      return
+      if (!(await shouldHandleAmbientMessage(thread, message, options))) {
+        traceLog(
+          options,
+          'slackbotv2_subscribed_message_without_mention_ignored',
+          createHandoffTrace(thread, message, 'append'),
+          { trigger }
+        )
+        return
+      }
+      trigger = 'ambient_subscribed_message'
+    } else {
+      lateSlackFiles.rememberFilelessMention(thread, message)
     }
-    lateSlackFiles.rememberFilelessMention(thread, message)
     await handleSlackMessageHandoff(thread, message, {
       assistantStatusRequested: true,
       mode: 'execute',
       options,
       state,
       steeringReactions,
-      trigger: 'subscribed_message'
+      trigger
     })
   })
 
@@ -3401,6 +3414,158 @@ function slackWebhookLogFields(rawBody: string): JsonObject {
 function setStringField(fields: JsonObject, key: string, value: unknown): void {
   const text = stringField(value)
   if (text) fields[key] = text
+}
+
+async function shouldHandleAmbientMessage(
+  thread: Thread<SlackbotV2ThreadState>,
+  message: ChatMessage,
+  options: SlackbotV2Options
+): Promise<boolean> {
+  const maxResponses = options.ambientTriggerMaxResponsesPerThread ?? 0
+  const strategy = options.ambientTriggerStrategy
+  if (maxResponses <= 0 || !strategy) return false
+
+  const trace = createHandoffTrace(thread, message, 'execute')
+  const currentCount = (await thread.state)?.ambientTriggerAcceptedCount ?? 0
+  if (currentCount >= maxResponses) {
+    slackbotMetrics.ambientTriggerDecisions.inc({ outcome: 'cap_reached' })
+    traceLog(options, 'slackbotv2_ambient_trigger_cap_reached', trace, {
+      accepted_count: currentCount,
+      max_responses_per_thread: maxResponses
+    })
+    return false
+  }
+
+  const startedAtMs = nowMs()
+  let outcome = 'error'
+  try {
+    const messages = await withSlackApiTimeout(
+      options,
+      'collect ambient trigger context',
+      () => collectAmbientTriggerContext(options, message)
+    )
+    if (messages.length === 0) {
+      outcome = 'skip_empty'
+      return false
+    }
+    const decision = await strategy({ messages })
+    if (decision.usage?.costUsd !== undefined) {
+      slackbotMetrics.ambientTriggerCostUsd.inc({}, decision.usage.costUsd)
+    }
+    if (decision.usage?.inputTokens !== undefined) {
+      slackbotMetrics.ambientTriggerInputTokens.inc({}, decision.usage.inputTokens)
+    }
+    if (!decision.respond) {
+      outcome = 'skip'
+      traceLog(options, 'slackbotv2_ambient_trigger_skipped', trace, {
+        model: decision.model,
+        probability: decision.probability
+      })
+      return false
+    }
+
+    const latest = (await thread.state) ?? {}
+    const acceptedCount = latest.ambientTriggerAcceptedCount ?? 0
+    if (acceptedCount >= maxResponses) {
+      outcome = 'cap_reached'
+      traceLog(options, 'slackbotv2_ambient_trigger_cap_reached', trace, {
+        accepted_count: acceptedCount,
+        max_responses_per_thread: maxResponses
+      })
+      return false
+    }
+    await thread.setState({ ambientTriggerAcceptedCount: acceptedCount + 1 })
+    outcome = 'execute'
+    traceLog(options, 'slackbotv2_ambient_trigger_accepted', trace, {
+      accepted_count: acceptedCount + 1,
+      max_responses_per_thread: maxResponses,
+      model: decision.model,
+      probability: decision.probability
+    })
+    return true
+  } catch (error) {
+    outcome = error instanceof Error && error.name === 'AbortError' ? 'timeout' : 'error'
+    traceWarn(options, 'slackbotv2_ambient_trigger_failed', trace, {
+      error: errorMessage(error)
+    })
+    return false
+  } finally {
+    slackbotMetrics.ambientTriggerDecisions.inc({ outcome })
+    slackbotMetrics.ambientTriggerDuration.observe({ outcome }, observeSeconds(startedAtMs))
+  }
+}
+
+async function collectAmbientTriggerContext(
+  options: SlackbotV2Options,
+  currentMessage: ChatMessage
+): Promise<AmbientTriggerMessage[]> {
+  const rawCurrent = slackRawRecord(currentMessage)
+  const channel = stringField(rawCurrent.channel)
+  const threadTs = stringField(rawCurrent.thread_ts)
+  const currentTs = stringField(rawCurrent.ts) || currentMessage.id
+  const preceding: AmbientTriggerMessage[] = []
+
+  if (channel && threadTs) {
+    let cursor: string | undefined
+    for (let page = 0; page < AMBIENT_TRIGGER_CONTEXT_MAX_PAGES; page += 1) {
+      const response = await fetchSlackThreadReplies({
+        apiUrl: options.slackApiUrl,
+        channel,
+        cursor,
+        inclusive: true,
+        latest: currentTs,
+        limit: AMBIENT_TRIGGER_CONTEXT_PAGE_SIZE,
+        token: options.botToken,
+        ts: threadTs
+      })
+      for (const value of response.messages) {
+        if (!isJsonObject(value)) continue
+        const messageTs = stringField(value.ts)
+        if (!messageTs || messageTs === currentTs || compareSlackTs(messageTs, currentTs) > 0) {
+          continue
+        }
+        const item = ambientTriggerMessage(options, value, false)
+        if (item) preceding.push(item)
+      }
+      cursor = response.nextCursor
+      if (!cursor) break
+    }
+  }
+
+  const current = ambientTriggerMessage(options, rawCurrent, true, currentMessage.text)
+  if (!current) return []
+  const candidates = [...preceding, current].slice(-AMBIENT_TRIGGER_CONTEXT_MAX_MESSAGES)
+  const bounded: AmbientTriggerMessage[] = []
+  let remainingChars = AMBIENT_TRIGGER_CONTEXT_MAX_CHARS
+  for (let index = candidates.length - 1; index >= 0 && remainingChars > 0; index -= 1) {
+    const candidate = candidates[index]!
+    const text = candidate.text.slice(0, remainingChars)
+    if (!text) continue
+    bounded.unshift({ ...candidate, text })
+    remainingChars -= text.length
+  }
+  return bounded
+}
+
+function ambientTriggerMessage(
+  options: SlackbotV2Options,
+  raw: Record<string, unknown>,
+  current: boolean,
+  fallbackText = ''
+): AmbientTriggerMessage | undefined {
+  const text = renderSlackDisplayText({
+    raw,
+    text: normalizeSlackText(stringField(raw.text) || fallbackText)
+  }).text.trim()
+  if (!text) return undefined
+  const actorId = slackActorId(raw)
+  const author =
+    actorId && options.botUserId && actorId === options.botUserId
+      ? 'bober'
+      : raw.bot_id || raw.bot_profile || stringField(raw.subtype) === 'bot_message'
+        ? 'bot'
+        : 'user'
+  return { author, current, text }
 }
 
 function isSlackThreadReply(message: ChatMessage): boolean {

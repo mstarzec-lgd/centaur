@@ -1,4 +1,5 @@
 import { createSlackbotV2, type SlackbotV2Options } from './index'
+import { createJevAmbientTriggerStrategy } from './ambient-trigger-strategy'
 import { parseChannelDefaults } from './channel-defaults'
 import { resolveSlackHomeTeamId } from './session-api'
 import { resolveSlackBotUserId } from './slack-user'
@@ -24,6 +25,24 @@ const messageOverridesStrategyMode = messageOverridesStrategyModeEnv(
 )
 const messageOverridesStrategyApiKey =
   optionalEnv('SLACKBOTV2_MESSAGE_OVERRIDES_OPENAI_API_KEY') ?? optionalEnv('OPENAI_API_KEY')
+const ambientTriggerMaxResponsesPerThread = numberEnv(
+  'SLACKBOTV2_AMBIENT_TRIGGER_MAX_RESPONSES_PER_THREAD',
+  0
+)
+if (
+  !Number.isInteger(ambientTriggerMaxResponsesPerThread)
+  || ambientTriggerMaxResponsesPerThread < 0
+) {
+  throw new Error('SLACKBOTV2_AMBIENT_TRIGGER_MAX_RESPONSES_PER_THREAD must be a non-negative integer')
+}
+const ambientTriggerApiKey =
+  optionalEnv('SLACKBOTV2_AMBIENT_TRIGGER_OPENROUTER_API_KEY')
+  ?? optionalEnv('OPENROUTER_API_KEY')
+if (ambientTriggerMaxResponsesPerThread > 0 && !ambientTriggerApiKey) {
+  throw new Error(
+    'SLACKBOTV2_AMBIENT_TRIGGER_OPENROUTER_API_KEY or OPENROUTER_API_KEY is required when ambient triggers are enabled'
+  )
+}
 
 // Default to info: the chat adapter logs entire raw Slack webhook bodies at
 // debug, and JSON-serializing those multi-hundred-KB payloads on the hot path
@@ -47,6 +66,18 @@ const consoleLogger = {
 const options: SlackbotV2Options = {
   apiUrl,
   agentViewEnabled: booleanEnv('SLACKBOTV2_AGENT_VIEW_ENABLED', false),
+  ambientTriggerMaxResponsesPerThread,
+  ambientTriggerStrategy:
+    ambientTriggerMaxResponsesPerThread > 0
+      ? createJevAmbientTriggerStrategy({
+          apiKey: ambientTriggerApiKey!,
+          apiUrl: optionalEnv('SLACKBOTV2_AMBIENT_TRIGGER_API_URL'),
+          logger: consoleLogger,
+          model: optionalEnv('SLACKBOTV2_AMBIENT_TRIGGER_MODEL'),
+          threshold: probabilityEnv('SLACKBOTV2_AMBIENT_TRIGGER_THRESHOLD', 0.9),
+          timeoutMs: optionalNumberEnv('SLACKBOTV2_AMBIENT_TRIGGER_TIMEOUT_MS')
+        })
+      : undefined,
   apiKey: optionalEnv('SLACKBOT_API_KEY'),
   assistantStatus: optionalEnv('SLACKBOTV2_ASSISTANT_STATUS'),
   activitySummaryStatusEnabled: booleanEnv('SLACKBOTV2_ACTIVITY_SUMMARY_STATUS_ENABLED', false),
@@ -116,6 +147,10 @@ console.log(
     event: 'slackbotv2_started',
     service: 'slackbotv2',
     agent_view_enabled: options.agentViewEnabled,
+    ambient_trigger_enabled: ambientTriggerMaxResponsesPerThread > 0,
+    ambient_trigger_max_responses_per_thread: ambientTriggerMaxResponsesPerThread,
+    ambient_trigger_model:
+      optionalEnv('SLACKBOTV2_AMBIENT_TRIGGER_MODEL') ?? '~typesafe/jev-latest',
     activity_summary_status_enabled: options.activitySummaryStatusEnabled,
     auto_join_created_channels_enabled: options.autoJoinCreatedChannels,
     message_overrides_strategy: messageOverridesStrategyMode,
@@ -183,6 +218,15 @@ function percentEnv(name: string, fallback: number): number {
   return parsed
 }
 
+function probabilityEnv(name: string, fallback: number): number {
+  const value = optionalEnv(name)
+  if (!value) return fallback
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+    throw new Error(`${name} must be a number from 0 to 1`)
+  }
+  return parsed
+}
 function createMessageOverridesStrategy(): SlackbotV2Options['messageOverridesStrategy'] {
   if (messageOverridesStrategyMode !== 'llm') return createFlagMessageOverridesStrategy()
   if (!messageOverridesStrategyApiKey) {
