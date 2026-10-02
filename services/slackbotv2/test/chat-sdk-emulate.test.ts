@@ -933,6 +933,48 @@ describe('slackbotv2', () => {
     expect(codexApi.executes).toHaveLength(1)
   })
 
+  it('releases the ambient response slot when the handoff fails before a response exists', async () => {
+    bot = createTestBot({
+      ambientTriggerAllowChannelIds: [CHANNEL_ID],
+      ambientTriggerMaxResponsesPerThread: 1,
+      ambientTriggerStrategy: async () => ({ probability: 0.98, respond: true })
+    })
+    codexApi.queueCreateResponse({ ok: false, error: 'invalid session request' }, 400)
+
+    const parent = await postUserMessage('Can Centaur inspect the deploy?')
+    for (const [index, text] of [
+      'first follow-up, whose handoff fails',
+      'second follow-up after the failure'
+    ].entries()) {
+      const followUp = await postUserMessage(text, parent.ts)
+      const waits: Promise<unknown>[] = []
+      const response = await bot.app.request(
+        '/api/webhooks/slack',
+        signedSlackEvent({
+          event_id: `Ev-ambient-handoff-failure-${index}`,
+          event: {
+            type: 'message',
+            user: USER_ID,
+            channel: CHANNEL_ID,
+            team: TEAM_ID,
+            ts: followUp.ts,
+            thread_ts: parent.ts,
+            text
+          }
+        }),
+        {},
+        waitUntilContext(waits)
+      )
+      expect(response.status).toBe(200)
+      await Promise.allSettled(waits)
+    }
+
+    expect(codexApi.executes).toHaveLength(1)
+    expect(JSON.stringify(codexApi.executes[0]!.body.input_lines)).toContain(
+      'second follow-up after the failure'
+    )
+  })
+
   it('skips ambient decisions when the recent thread context is beyond the page limit', async () => {
     let decisions = 0
     bot = createTestBot({

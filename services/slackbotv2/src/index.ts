@@ -510,15 +510,17 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
       })
       return
     }
-    if (!(await shouldHandleAmbientMessage(
+    const ambientClaim = await shouldHandleAmbientMessage(
       thread,
       message,
       options,
       state,
       ambientTriggerAllowChannelIds,
       ambientTriggerDenyChannelIds
-    ))) return
+    )
+    if (!ambientClaim) return
     await handleSlackMessageHandoff(thread, message, {
+      ambientClaim,
       assistantStatusRequested: true,
       mode: 'execute',
       options,
@@ -533,15 +535,17 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
     if (!(await isAllowedSlackMessage(message, options, logger))) return
     if (slackRichTextMentionsUser(message.raw, options.botUserId)) message.isMention = true
     let trigger = 'subscribed_message'
+    let ambientClaim: AmbientTriggerClaim | undefined
     if (message.isMention !== true) {
-      if (!(await shouldHandleAmbientMessage(
+      ambientClaim = (await shouldHandleAmbientMessage(
         thread,
         message,
         options,
         state,
         ambientTriggerAllowChannelIds,
         ambientTriggerDenyChannelIds
-      ))) {
+      )) ?? undefined
+      if (!ambientClaim) {
         traceLog(
           options,
           'slackbotv2_subscribed_message_without_mention_ignored',
@@ -555,6 +559,7 @@ export function createSlackbotV2(options: SlackbotV2Options): SlackbotV2 {
       lateSlackFiles.rememberFilelessMention(thread, message)
     }
     await handleSlackMessageHandoff(thread, message, {
+      ambientClaim,
       assistantStatusRequested: true,
       mode: 'execute',
       options,
@@ -686,6 +691,7 @@ async function handleSlackMessageHandoff(
   thread: Thread<SlackbotV2ThreadState>,
   message: ChatMessage,
   input: {
+    ambientClaim?: AmbientTriggerClaim
     assistantStatusRequested: boolean
     mode: SlackbotV2MessageMode
     options: SlackbotV2Options
@@ -730,6 +736,7 @@ async function handleSlackMessageHandoff(
       trigger: input.trigger
     })
     await syncThreadMessageToSession(thread, message, {
+      ambientClaim: input.ambientClaim,
       initialAssistantStatus: assistantStatus,
       initialAssistantStatusRequested: assistantStatusRequested,
       initialAssistantStatusVisible,
@@ -746,6 +753,7 @@ async function handleSlackMessageHandoff(
       error: errorMessage(error),
       trigger: input.trigger
     })
+    await releaseAmbientTriggerClaim(input, trace)
     backgroundWaitUntil(
       assistantStatus
         .then(async visible => {
@@ -1137,6 +1145,7 @@ async function ensureStateConnected(
 }
 
 type SyncThreadMessageInput = {
+  ambientClaim?: AmbientTriggerClaim
   initialAssistantStatus?: Promise<boolean>
   initialAssistantStatusRequested?: boolean
   initialAssistantStatusVisible?: boolean
@@ -1190,6 +1199,7 @@ function scheduleHandoffRetry(
         error: errorMessage(retryError)
       })
       finishSteeringReaction(input, trace)
+      await releaseAmbientTriggerClaim(input, trace)
       // A retry chain that dies outside the normal failure paths (which clear
       // the status themselves) must not leave "Thinking..." stuck on the thread.
       if (input.mode === 'execute' && input.initialAssistantStatusRequested) {
@@ -1599,6 +1609,7 @@ async function syncThreadMessageToSession(
         finishSteeringReaction(input, trace)
         traceLog(input.options, 'slackbotv2_session_admission_denied', trace)
         recordForward(input.mode, 'admission_denied', traceStartedAtMs)
+        await releaseAmbientTriggerClaim(input, trace)
         return
       }
       if (isRetryableSessionApiError(error)) {
@@ -1730,6 +1741,7 @@ async function syncThreadMessageToSession(
       )
       traceLog(input.options, 'slackbotv2_session_admission_denied', trace)
       recordForward(input.mode, 'admission_denied', traceStartedAtMs)
+      await releaseAmbientTriggerClaim(input, trace)
       return
     }
     if (isRetryableSessionApiError(error)) {
@@ -1752,6 +1764,7 @@ async function syncThreadMessageToSession(
         error: errorMessage(error)
       })
     }
+    await releaseAmbientTriggerClaim(input, trace)
     try {
       await renderExecutionStream(
         thread,
@@ -3504,6 +3517,30 @@ async function claimAmbientTriggerSlot(
   return null
 }
 
+/** A reserved ambient response slot, held until the handoff durably succeeds. */
+type AmbientTriggerClaim = { key: string; messageId: string }
+
+// A claim reserves a slot before the handoff runs, so a handoff that never
+// produces a response must give it back or a transient failure would consume
+// the only slot for the 30-day state TTL. Delete only while the slot still
+// holds this message's ID: after a TTL expiry another message may own it.
+async function releaseAmbientTriggerClaim(
+  input: { ambientClaim?: AmbientTriggerClaim; options: SlackbotV2Options; state: StateAdapter },
+  trace?: SlackbotV2Trace
+): Promise<void> {
+  const claim = input.ambientClaim
+  if (!claim) return
+  try {
+    if (await input.state.get<string>(claim.key) === claim.messageId) {
+      await input.state.delete(claim.key)
+    }
+  } catch (error) {
+    traceWarn(input.options, 'slackbotv2_ambient_trigger_claim_release_failed', trace, {
+      error: errorMessage(error)
+    })
+  }
+}
+
 async function shouldHandleAmbientMessage(
   thread: Thread<SlackbotV2ThreadState>,
   message: ChatMessage,
@@ -3511,11 +3548,11 @@ async function shouldHandleAmbientMessage(
   state: StateAdapter,
   allowChannelIds: ReadonlySet<string>,
   denyChannelIds: ReadonlySet<string>
-): Promise<boolean> {
-  if (!isAmbientTriggerChannel(message, allowChannelIds, denyChannelIds)) return false
+): Promise<AmbientTriggerClaim | null> {
+  if (!isAmbientTriggerChannel(message, allowChannelIds, denyChannelIds)) return null
   const maxResponses = options.ambientTriggerMaxResponsesPerThread ?? 1
   const strategy = options.ambientTriggerStrategy
-  if (!strategy) return false
+  if (!strategy) return null
 
   const trace = createHandoffTrace(thread, message, 'execute')
   if (await ambientTriggerCapReached(state, thread.id, maxResponses)) {
@@ -3524,7 +3561,7 @@ async function shouldHandleAmbientMessage(
       accepted_count: maxResponses,
       max_responses_per_thread: maxResponses
     })
-    return false
+    return null
   }
 
   const startedAtMs = nowMs()
@@ -3537,7 +3574,7 @@ async function shouldHandleAmbientMessage(
     )
     if (messages.length === 0) {
       outcome = 'skip_empty'
-      return false
+      return null
     }
     const channelId = stringField(slackRawRecord(message).channel)
     const decision = await strategy({ channelId, isThreadReply: isSlackThreadReply(message), messages })
@@ -3553,7 +3590,7 @@ async function shouldHandleAmbientMessage(
         model: decision.model,
         probability: decision.probability
       })
-      return false
+      return null
     }
 
     const acceptedCount = await claimAmbientTriggerSlot(
@@ -3568,7 +3605,7 @@ async function shouldHandleAmbientMessage(
         accepted_count: maxResponses,
         max_responses_per_thread: maxResponses
       })
-      return false
+      return null
     }
     outcome = 'execute'
     traceLog(options, 'slackbotv2_ambient_trigger_accepted', trace, {
@@ -3577,13 +3614,13 @@ async function shouldHandleAmbientMessage(
       model: decision.model,
       probability: decision.probability
     })
-    return true
+    return { key: ambientTriggerClaimKey(thread.id, acceptedCount), messageId: message.id }
   } catch (error) {
     outcome = error instanceof Error && error.name === 'AbortError' ? 'timeout' : 'error'
     traceWarn(options, 'slackbotv2_ambient_trigger_failed', trace, {
       error: errorMessage(error)
     })
-    return false
+    return null
   } finally {
     slackbotMetrics.ambientTriggerDecisions.inc({ outcome })
     slackbotMetrics.ambientTriggerDuration.observe({ outcome }, observeSeconds(startedAtMs))
