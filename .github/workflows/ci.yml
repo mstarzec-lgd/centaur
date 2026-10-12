@@ -150,6 +150,10 @@ jobs:
             '^tools/' \
             '^centaur_sdk/' \
             '^\.github/scripts/run-tool-tests\.sh$' \
+            '^\.github/scripts/start-test-postgres\.sh$' \
+            '^services/api-rs/crates/centaur-session-sqlx/(search-)?migrations/' \
+            '^services/company-context/migrations/' \
+            '^services/iron-proxy/Dockerfile$' \
             '^\.github/workflows/ci\.yml$'
           set_output slackbotv2_tests \
             '^services/slackbotv2/' \
@@ -306,15 +310,9 @@ jobs:
       - name: Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
 
-      - name: Test
-        run: cargo test --locked
-
-      - name: Build parity test server
-        run: cargo build --locked
-
-      - name: Start parity database
+      - name: Start test database
         working-directory: .
-        run: .github/scripts/start-test-postgres.sh proxy-sync-parity-postgres 5432 proxy_sync_parity_test
+        run: .github/scripts/start-test-postgres.sh proxy-sync-test-postgres 5432 proxy_sync_test pgvector
 
       - name: Install Console packages
         run: sudo apt-get update && sudo apt-get install --no-install-recommends -y libvips libpq-dev
@@ -324,15 +322,31 @@ jobs:
           working-directory: services/console
           bundler-cache: true
 
+      # proxy-sync reads Console's tables directly, so its integration tests
+      # run against the schema Console currently ships.
+      - name: Load Console schema
+        working-directory: services/console
+        env:
+          RAILS_ENV: test
+          CENTAUR_CONSOLE_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/proxy_sync_test
+        run: bin/rails db:prepare
+
+      - name: Test
+        env:
+          PROXY_SYNC_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/proxy_sync_test
+        run: cargo test --locked
+
+      - name: Build parity test server
+        run: cargo build --locked
+
       - name: Compare Rails and Rust sync responses
         working-directory: services/console
         env:
           RAILS_ENV: test
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/proxy_sync_parity_test
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/proxy_sync_test
           PROXY_SYNC_BINARY: ../proxy-sync/target/debug/centaur-proxy-sync
         run: |
           export CENTAUR_CONSOLE_DATABASE_URL="$DATABASE_URL"
-          bin/rails db:prepare
           bin/rails test ../proxy-sync/tests/rails_parity_test.rb --verbose
 
   rust-api:
@@ -511,7 +525,12 @@ jobs:
           prune-cache: true
           cache-dependency-glob: tools/**/pyproject.toml
 
+      - name: Start Test Postgres
+        run: .github/scripts/start-test-postgres.sh tool-test-postgres 5432 postgres
+
       - name: Run tool tests
+        env:
+          COMPANY_CONTEXT_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
         run: .github/scripts/run-tool-tests.sh
 
   slackbotv2-tests:

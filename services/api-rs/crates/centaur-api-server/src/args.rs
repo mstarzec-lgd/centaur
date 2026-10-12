@@ -1885,6 +1885,26 @@ struct IronProxyArgs {
     bootstrap_secret_name: Option<String>,
     #[arg(long = "kubernetes-api-pod-label-selector", env = "KUBERNETES_API_POD_LABEL_SELECTOR", value_parser = parse_label_selector_arg)]
     api_pod_label_selector: Option<BTreeMap<String, String>>,
+    /// Pod labels for the proxy-sync service that per-sandbox proxies contact.
+    #[arg(
+        long = "kubernetes-iron-proxy-sync-pod-label-selector",
+        env = "KUBERNETES_IRON_PROXY_SYNC_POD_LABEL_SELECTOR",
+        value_parser = parse_label_selector_arg
+    )]
+    proxy_sync_pod_label_selector: Option<BTreeMap<String, String>>,
+    /// In-cluster company-context API URL that per-sandbox proxies may reach.
+    #[arg(
+        long = "kubernetes-iron-proxy-company-context-url",
+        env = "KUBERNETES_IRON_PROXY_COMPANY_CONTEXT_URL"
+    )]
+    company_context_url: Option<String>,
+    /// Pod labels for the company-context service.
+    #[arg(
+        long = "kubernetes-iron-proxy-company-context-pod-label-selector",
+        env = "KUBERNETES_IRON_PROXY_COMPANY_CONTEXT_POD_LABEL_SELECTOR",
+        value_parser = parse_label_selector_arg
+    )]
+    company_context_pod_label_selector: Option<BTreeMap<String, String>>,
 }
 
 impl IronProxyArgs {
@@ -1926,6 +1946,22 @@ impl IronProxyArgs {
             .filter(|labels| !labels.is_empty())
         {
             config.api_pod_labels = labels.clone();
+        }
+        if let Some(labels) = self
+            .proxy_sync_pod_label_selector
+            .as_ref()
+            .filter(|labels| !labels.is_empty())
+        {
+            config.proxy_sync_pod_labels = labels.clone();
+        }
+        config.company_context_url =
+            non_empty(self.company_context_url.as_deref()).map(ToOwned::to_owned);
+        if let Some(labels) = self
+            .company_context_pod_label_selector
+            .as_ref()
+            .filter(|labels| !labels.is_empty())
+        {
+            config.company_context_pod_labels = labels.clone();
         }
         Ok(config)
     }
@@ -2151,11 +2187,14 @@ impl IronProxyHarnessArgs {
     fn fragment(&self) -> Result<ProxyFragment, ServerError> {
         let engine = harness_fragment_engine_name(&self.engine);
         let auth_mode = self.resolved_auth_mode();
-        // Pi reads placeholder API keys from the environment; it has no
-        // subscription (access_token) credential path.
-        if self.engine == HarnessType::Pi && auth_mode.replace('-', "_") != "api_key" {
+        // Pi and OMP read placeholder API keys from the environment; they have
+        // no subscription (access_token) credential path.
+        if matches!(self.engine, HarnessType::Pi | HarnessType::Omp)
+            && auth_mode.replace('-', "_") != "api_key"
+        {
+            let engine = &self.engine;
             return Err(ServerError::UnsupportedConfig(format!(
-                "the pi harness supports only api_key auth, not {auth_mode}"
+                "the {engine} harness supports only api_key auth, not {auth_mode}"
             )));
         }
         harness_auth_fragment(engine, &auth_mode)?.ok_or_else(|| {
@@ -2219,8 +2258,8 @@ fn harness_fragment_engine_name(engine: &HarnessType) -> &'static str {
         HarnessType::ClaudeCode => "claude-code",
         HarnessType::Nanocodex => "codex",
         HarnessType::Hermes => "hermes",
-        // Pi defaults to Anthropic when its key is present.
-        HarnessType::Pi => "claude-code",
+        // Pi and OMP default to Anthropic when its key is present.
+        HarnessType::Pi | HarnessType::Omp => "claude-code",
     }
 }
 
@@ -2236,7 +2275,9 @@ fn merge_fragment(target: &mut ProxyFragment, source: ProxyFragment) {
 fn harness_auth_mode_env(engine: &HarnessType) -> Option<String> {
     match engine {
         HarnessType::Codex | HarnessType::Nanocodex => env::var("CODEX_AUTH_MODE").ok(),
-        HarnessType::ClaudeCode | HarnessType::Pi => env::var("CLAUDE_CODE_AUTH_MODE").ok(),
+        HarnessType::ClaudeCode | HarnessType::Pi | HarnessType::Omp => {
+            env::var("CLAUDE_CODE_AUTH_MODE").ok()
+        }
         HarnessType::Amp => None,
         // Hermes resolves providers through its own credential store /
         // iron-proxy placeholder injection; no dedicated auth-mode env.
@@ -3621,22 +3662,25 @@ mod tests {
     fn pi_uses_anthropic_api_key_placeholder_and_rejects_access_token() {
         let _guard = ENV_LOCK.lock().unwrap();
         let _env = EnvGuard::set(&[("CLAUDE_CODE_AUTH_MODE", "api_key")]);
-        let pi = |auth_mode: Option<&str>| IronProxyHarnessArgs {
-            engine: HarnessType::Pi,
-            auth_mode: auth_mode.map(str::to_owned),
-        };
+        for engine in [HarnessType::Pi, HarnessType::Omp] {
+            let pi = |auth_mode: Option<&str>| IronProxyHarnessArgs {
+                engine: engine.clone(),
+                auth_mode: auth_mode.map(str::to_owned),
+            };
 
-        let fragment = pi(None).fragment().unwrap();
-        let replaced: Vec<_> = fragment
-            .transforms
-            .iter()
-            .flat_map(|transform| &transform.config.secrets)
-            .filter_map(|secret| secret.replace.as_ref()?.proxy_value.as_deref())
-            .collect();
-        assert_eq!(replaced, ["ANTHROPIC_API_KEY"]);
+            let fragment = pi(None).fragment().unwrap();
+            let replaced: Vec<_> = fragment
+                .transforms
+                .iter()
+                .flat_map(|transform| &transform.config.secrets)
+                .filter_map(|secret| secret.replace.as_ref()?.proxy_value.as_deref())
+                .collect();
+            assert_eq!(replaced, ["ANTHROPIC_API_KEY"]);
+            pi(Some("api-key")).fragment().unwrap();
 
-        let error = pi(Some("access_token")).fragment().unwrap_err();
-        assert!(error.to_string().contains("only api_key"), "{error}");
+            let error = pi(Some("access_token")).fragment().unwrap_err();
+            assert!(error.to_string().contains("only api_key"), "{error}");
+        }
     }
 
     #[test]
